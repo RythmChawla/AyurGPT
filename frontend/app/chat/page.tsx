@@ -1,33 +1,36 @@
 'use client'
 
 import React, { useState, useEffect, useRef } from 'react'
-import { apiClient } from '@/lib/api'
 import { useAuthStore } from '@/lib/store'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import type { ChatMessage, ChatHistory as ChatHistoryType } from '@/types'
+
+interface Message {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  sources?: Array<{ title: string; content: string }>
+  created_at: string
+}
 
 export default function ChatPage() {
   const { isAuthenticated, hasHydrated } = useAuthStore()
   const router = useRouter()
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [messages, setMessages] = useState<Message[]>([])
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [chatId, setChatId] = useState<string | null>(null)
-  const [chatHistory, setChatHistory] = useState<ChatHistoryType[]>([])
-  const [showHistory, setShowHistory] = useState(false)
+  const [ragStatus, setRagStatus] = useState<{ isReady: boolean; chunks: number } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!hasHydrated) {
-      return
-    }
+    if (!hasHydrated) return
 
     if (!isAuthenticated) {
       router.push('/login')
     } else {
-      loadChatHistory()
+      // Check RAG status
+      checkRagStatus()
     }
   }, [hasHydrated, isAuthenticated, router])
 
@@ -39,77 +42,117 @@ export default function ChatPage() {
     scrollToBottom()
   }, [messages])
 
-  const loadChatHistory = async () => {
+  const checkRagStatus = async () => {
     try {
-      const chats = await apiClient.listChats(0, 20)
-      setChatHistory(chats)
+      const token = localStorage.getItem('access_token')
+      const response = await fetch('/api/v1/rag/stats', {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setRagStatus({ isReady: data.isReady, chunks: data.chunks?.total || 0 })
+      }
     } catch (error) {
-      console.error('Error loading chat history:', error)
-    }
-  }
-
-  const handleLoadChat = async (chat: ChatHistoryType) => {
-    try {
-      const fullChat = await apiClient.getChatHistory(chat.id)
-      setMessages(fullChat.messages || [])
-      setChatId(chat.id)
-      setShowHistory(false)
-    } catch (error) {
-      console.error('Error loading chat:', error)
+      console.error('Error checking RAG status:', error)
     }
   }
 
   const handleNewChat = () => {
     setMessages([])
-    setChatId(null)
     setInputValue('')
-  }
-
-  const handleDeleteChat = async (chatIdToDelete: string) => {
-    try {
-      await apiClient.deleteChat(chatIdToDelete)
-      await loadChatHistory()
-      if (chatId === chatIdToDelete) {
-        handleNewChat()
-      }
-    } catch (error) {
-      console.error('Error deleting chat:', error)
-    }
   }
 
   const handleSendMessage = async () => {
     if (!inputValue.trim()) return
 
-    const userMessage = {
+    const userMessage: Message = {
       id: Date.now().toString(),
-      role: 'user' as const,
+      role: 'user',
       content: inputValue,
       created_at: new Date().toISOString(),
     }
 
-    setMessages([...messages, userMessage])
+    setMessages(prev => [...prev, userMessage])
     setInputValue('')
     setIsLoading(true)
 
+    // Create placeholder for assistant message
+    const assistantMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: '',
+      sources: [],
+      created_at: new Date().toISOString(),
+    }
+    setMessages(prev => [...prev, assistantMessage])
+
     try {
-      const response = await apiClient.sendMessage(inputValue, chatId ?? undefined)
-      
-      const responseChatId = response.message?.metadata?.chat_history_id
-      if (!chatId && responseChatId) {
-        setChatId(responseChatId)
-        await loadChatHistory()
+      const token = localStorage.getItem('access_token')
+      const response = await fetch('/api/v1/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ message: inputValue }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to send message')
       }
 
-      setMessages(prev => [...prev, response.message])
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+
+      if (!reader) {
+        throw new Error('No response body')
+      }
+
+      let sources: Array<{ title: string; content: string }> = []
+      let fullContent = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value)
+        const lines = chunk.split('\n')
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6)
+            if (data === '[DONE]') continue
+
+            try {
+              const parsed = JSON.parse(data)
+              if (parsed.type === 'sources') {
+                sources = parsed.sources
+              } else if (parsed.type === 'text') {
+                fullContent += parsed.content
+                // Update the assistant message with streaming content
+                setMessages(prev => 
+                  prev.map(m => 
+                    m.id === assistantMessage.id 
+                      ? { ...m, content: fullContent, sources }
+                      : m
+                  )
+                )
+              }
+            } catch {
+              // Ignore parse errors for partial JSON
+            }
+          }
+        }
+      }
     } catch (error) {
       console.error('Error sending message:', error)
-      const errorMessage = {
-        id: Date.now().toString(),
-        role: 'assistant' as const,
-        content: 'Sorry, there was an error processing your request. Please try again.',
-        created_at: new Date().toISOString(),
-      }
-      setMessages(prev => [...prev, errorMessage])
+      setMessages(prev => 
+        prev.map(m => 
+          m.id === assistantMessage.id 
+            ? { ...m, content: 'Sorry, there was an error processing your request. Please try again.' }
+            : m
+        )
+      )
     } finally {
       setIsLoading(false)
     }
@@ -134,72 +177,59 @@ export default function ChatPage() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-emerald-50 py-8">
       <div className="mx-auto max-w-6xl px-4">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Sidebar - Chat History */}
+          {/* Sidebar - RAG Status & Actions */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             className="lg:col-span-1"
           >
             <div className="glass-effect p-4 rounded-2xl sticky top-24">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="font-bold text-lg">Chats</h2>
-                <button
-                  onClick={() => setShowHistory(!showHistory)}
-                  className="lg:hidden text-emerald-600 hover:text-emerald-800"
-                >
-                  {showHistory ? '✕' : '≡'}
-                </button>
-              </div>
+              <h2 className="font-bold text-lg mb-4">AyurGPT</h2>
 
               <button
                 onClick={handleNewChat}
                 className="btn-primary w-full mb-4 !py-2 !text-sm"
               >
-                ➕ New Chat
+                New Chat
               </button>
 
-              <AnimatePresence>
-                {(showHistory || typeof window !== 'undefined' && window.innerWidth >= 1024) && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="space-y-2 max-h-96 overflow-y-auto"
-                  >
-                    {chatHistory.length === 0 ? (
-                      <p className="text-sm text-gray-500 text-center py-4">No chats yet</p>
-                    ) : (
-                      chatHistory.map((chat) => (
-                        <motion.div
-                          key={chat.id}
-                          whileHover={{ x: 5 }}
-                          className="group relative"
-                        >
-                          <button
-                            onClick={() => handleLoadChat(chat)}
-                            className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-                              chatId === chat.id
-                                ? 'bg-emerald-100 text-emerald-900 font-semibold'
-                                : 'text-gray-700 hover:bg-gray-100'
-                            }`}
-                          >
-                            <div className="truncate">{chat.title || 'Untitled'}</div>
-                            <div className="text-xs text-gray-500">
-                              {new Date(chat.created_at).toLocaleDateString()}
-                            </div>
-                          </button>
-                          <button
-                            onClick={() => handleDeleteChat(chat.id)}
-                            className="absolute right-1 top-2 opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-700 text-sm"
-                          >
-                            🗑️
-                          </button>
-                        </motion.div>
-                      ))
-                    )}
-                  </motion.div>
+              {/* RAG Status */}
+              <div className="p-3 bg-gray-50 rounded-lg mb-4">
+                <p className="text-xs font-medium text-gray-500 mb-1">Knowledge Base</p>
+                {ragStatus ? (
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${ragStatus.isReady ? 'bg-emerald-500' : 'bg-yellow-500'}`} />
+                    <span className="text-sm text-gray-700">
+                      {ragStatus.isReady ? `${ragStatus.chunks} chunks indexed` : 'No documents yet'}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500">Checking...</p>
                 )}
-              </AnimatePresence>
+              </div>
+
+              {/* Quick Tips */}
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-gray-500">Try asking about:</p>
+                <button
+                  onClick={() => setInputValue('What are the three doshas in Ayurveda?')}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-700 bg-white rounded-lg hover:bg-emerald-50 transition-colors"
+                >
+                  Three Doshas
+                </button>
+                <button
+                  onClick={() => setInputValue('What herbs help with digestion?')}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-700 bg-white rounded-lg hover:bg-emerald-50 transition-colors"
+                >
+                  Digestive Herbs
+                </button>
+                <button
+                  onClick={() => setInputValue('How can I balance my Vata dosha?')}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-700 bg-white rounded-lg hover:bg-emerald-50 transition-colors"
+                >
+                  Vata Balance
+                </button>
+              </div>
             </div>
           </motion.div>
 
@@ -228,20 +258,33 @@ export default function ChatPage() {
                       animate={{ opacity: 1, y: 0 }}
                       className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                     >
-                      <div
-                        className={`max-w-xs lg:max-w-md px-4 py-3 rounded-lg ${
-                          msg.role === 'user'
-                            ? 'bg-emerald-500 text-white rounded-br-none'
-                            : 'bg-gray-200 text-gray-900 rounded-bl-none'
-                        }`}
-                      >
-                        <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                        <p className="text-xs opacity-70 mt-1">
-                          {new Date(msg.created_at).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
-                        </p>
+                      <div className={`max-w-xs lg:max-w-lg ${msg.role === 'user' ? '' : ''}`}>
+                        <div
+                          className={`px-4 py-3 rounded-lg ${
+                            msg.role === 'user'
+                              ? 'bg-emerald-500 text-white rounded-br-none'
+                              : 'bg-gray-200 text-gray-900 rounded-bl-none'
+                          }`}
+                        >
+                          <p className="text-sm whitespace-pre-wrap">{msg.content || (isLoading && msg.role === 'assistant' ? '' : '')}</p>
+                          <p className="text-xs opacity-70 mt-1">
+                            {new Date(msg.created_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </p>
+                        </div>
+                        {/* Sources Display */}
+                        {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
+                          <div className="mt-2 p-2 bg-emerald-50 rounded-lg border border-emerald-100">
+                            <p className="text-xs font-medium text-emerald-700 mb-1">Sources:</p>
+                            {msg.sources.map((source, sIdx) => (
+                              <p key={sIdx} className="text-xs text-emerald-600 truncate">
+                                {source.title}
+                              </p>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </motion.div>
                   ))}

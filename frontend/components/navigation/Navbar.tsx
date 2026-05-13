@@ -50,6 +50,11 @@ export function Navbar() {
                 <Link href="/dashboard" className="text-sm text-gray-700 hover:text-emerald-600">
                   {user?.full_name || user?.username}
                 </Link>
+                {user?.is_admin && (
+                  <Link href="/admin/documents" className="text-sm text-emerald-600 hover:text-emerald-700 font-medium">
+                    Admin
+                  </Link>
+                )}
                 <Link href="/profile" className="btn-secondary !px-4 !py-2 !text-sm">
                   Profile
                 </Link>

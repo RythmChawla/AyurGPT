@@ -22,7 +22,9 @@ export default function LoginPage() {
     try {
       const response = await apiClient.login(email, password)
       setTokens(response)
-      const user = await apiClient.getCurrentUser()
+      const userData = await apiClient.getCurrentUser()
+      // Handle both direct user object and wrapped response
+      const user = userData.user || userData
       setUser(user)
       router.push('/dashboard')
     } catch (err) {
