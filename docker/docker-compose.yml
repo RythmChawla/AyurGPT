@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: ayurgpt_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ayurgpt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-ayurgpt_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ayurgpt"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ayurgpt_network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ayurgpt_backend
+    environment:
+      - DATABASE_URL=postgresql://ayurgpt:password@postgres:5432/ayurgpt_db
+      - SECRET_KEY=${SECRET_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PINECONE_API_KEY=${PINECONE_API_KEY}
+      - VECTOR_DB_TYPE=${VECTOR_DB_TYPE:-chromadb}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../backend:/app
+      - /app/__pycache__
+    networks:
+      - ayurgpt_network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ChromaDB (Vector Database - Optional)
+  chromadb:
+    image: ghcr.io/chroma-core/chroma:latest
+    container_name: ayurgpt_chromadb
+    environment:
+      - IS_PERSISTENT=TRUE
+    ports:
+      - "8001:8000"
+    volumes:
+      - chromadb_data:/chroma/data
+    networks:
+      - ayurgpt_network
+    profiles:
+      - chromadb
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: ayurgpt_frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ../frontend:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - ayurgpt_network
+    command: npm run dev
+
+volumes:
+  postgres_data:
+  chromadb_data:
+
+networks:
+  ayurgpt_network:
+    driver: bridge
