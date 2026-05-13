@@ -1,7 +1,8 @@
 import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios'
 import { AuthTokens } from '@/types'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+// Use local Next.js API routes - no external backend needed
+const API_URL = ''
 
 class APIClient {
   private client: AxiosInstance
