@@ -253,23 +253,6 @@ The AI system includes multiple safety layers:
 - `PUT /api/user/profile` - Update user profile
 - `GET /api/user/dashboard` - Get dashboard data
 
-## 🎨 UI/UX Design
-
-### Color Palette
-- Primary: Calming greens (#10b981, #059669)
-- Secondary: Earthy tones (#d97706, #b45309)
-- Neutral: Soft whites and light grays
-- Accents: Herbal gradients
-
-### Design Elements
-- Glassmorphism cards
-- Smooth animations
-- Floating herbal particles
-- AI typing animation
-- Citation popups
-- Dosha visualization charts
-- Nature-inspired aesthetics
-
 ## 📦 Environment Variables
 
 See `.env.example` for complete list. Key variables:
@@ -343,30 +326,12 @@ vercel deploy
 # Push to GitHub and connect repository
 ```
 
-## 🤝 Contributing
-
-1. Create a feature branch
-2. Commit changes with clear messages
-3. Push to GitHub
-4. Create Pull Request
-
-## 📄 License
-
-This project is open source. See LICENSE file for details.
-
 ## 🙏 Acknowledgments
 
 - Classical Ayurvedic texts authors
 - Ayurveda scholars and practitioners
 - Modern AI/ML communities
 - Open source contributors
-
-## 📞 Support & Contact
-
-For questions, issues, or suggestions:
-- Create an issue on GitHub
-- Email: support@ayurgpt.com
-- Discord: [Community Server]
 
 ---
 
